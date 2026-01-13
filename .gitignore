@@ -205,6 +205,9 @@ cython_debug/
 cope_research/results/*.json
 cope_research/results/*.png
 
+# Modal local state
+.modal/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

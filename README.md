@@ -50,6 +50,18 @@ python cope_research/run_experiment.py learning-curve --backend llama_cpp --epis
 
 Results are saved to `cope_research/results/*.json` and plots to `*.png`.
 
+## Run on Modal (recommended for longer runs)
+
+If local inference is slow, you can run the same experiment remotely on Modal:
+
+```bash
+pip install -r requirements.txt
+modal run cope_research/modal_app.py --experiment learning-curve --episodes 100 --runs 5
+```
+
+This uses the same `llama_cpp` backend and will populate `cope_research/results/` locally
+with the JSON + plots (HF model cache is persisted in a Modal volume).
+
 ## Hosted open-source model via Groq (optional)
 
 If you prefer a hosted open-weights model, the framework also supports **Groq** via an
