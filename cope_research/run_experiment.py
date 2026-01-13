@@ -3,15 +3,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from cope_research.src.agent import LinUCBConfig, LinUCBAgent
-from cope_research.src.data_gen import MarkdownSample, generate_dataset, generate_drift_dataset
-from cope_research.src.environment import Environment
-from cope_research.src.features import extract_features
+# Allow running as: `python cope_research/run_experiment.py ...`
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from cope_research.src.agent import LinUCBConfig, LinUCBAgent  # noqa: E402
+from cope_research.src.data_gen import (  # noqa: E402
+    MarkdownSample,
+    generate_dataset,
+    generate_drift_dataset,
+)
+from cope_research.src.environment import Environment  # noqa: E402
+from cope_research.src.features import extract_features  # noqa: E402
 
 
 @dataclass(frozen=True)
