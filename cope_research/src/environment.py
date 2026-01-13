@@ -381,7 +381,7 @@ class Environment:
             raw_outputs: list[str] = []
             for chunk in chunks:
                 user_prompt = f"{schema_hint}\n\nConvert this Markdown chunk to JSON:\n\n{chunk}"
-                raw, cost = self._llama_complete(system_prompt, user_prompt, max_tokens=512)
+                raw, cost = self._llama_complete(system_prompt, user_prompt, max_tokens=256)
                 total_cost += cost
                 raw_outputs.append(raw)
                 obj = _extract_json_object(raw)
@@ -400,8 +400,11 @@ class Environment:
                 raw_output="\n\n---\n\n".join(raw_outputs),
             )
 
+        max_tokens = 256
+        if action_id == 2:
+            max_tokens = 384
         user_prompt = f"{schema_hint}\n\nConvert the following Markdown to JSON:\n\n{markdown_content}"
-        raw_output, token_cost = self._llama_complete(system_prompt, user_prompt, max_tokens=768)
+        raw_output, token_cost = self._llama_complete(system_prompt, user_prompt, max_tokens=max_tokens)
         generated = _extract_json_object(raw_output)
         parse_ok = generated is not None
         schema_ok = bool(generated) and _validate_schema_keys(generated, expected_keys) if parse_ok else False
