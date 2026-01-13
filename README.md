@@ -28,11 +28,32 @@ python cope_research/run_experiment.py drift --episodes 100 --runs 20
 python cope_research/plot_results.py cope_research/results/drift.json
 ```
 
-## Real LLM environment (optional)
+## Real local open-source LLM (default)
 
-By default, experiments use a **mock LLM** so results are reproducible without API keys.
-The framework also includes an optional **Groq (OpenAI-compatible) backend** in
-`cope_research/src/environment.py`.
+By default, the experiment runner uses a **local open-source GGUF model** via `llama.cpp`
+(`backend=llama_cpp`). On first run, it will auto-download a small model from Hugging Face:
+
+- Repo: `Qwen/Qwen2.5-0.5B-Instruct-GGUF`
+- File: `qwen2.5-0.5b-instruct-q4_k_m.gguf`
+
+You can override:
+
+- `COPE_GGUF_REPO`
+- `COPE_GGUF_FILE`
+- `COPE_GGUF_PATH` (to point at a local GGUF file)
+
+Example:
+
+```bash
+python cope_research/run_experiment.py learning-curve --backend llama_cpp --episodes 60 --runs 3
+```
+
+Results are saved to `cope_research/results/*.json` and plots to `*.png`.
+
+## Hosted open-source model via Groq (optional)
+
+If you prefer a hosted open-weights model, the framework also supports **Groq** via an
+OpenAI-compatible API (`backend=groq`).
 
 Set:
 

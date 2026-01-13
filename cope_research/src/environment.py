@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from .prompts import PROMPT_STRATEGIES, build_prompt
+from .prompts import PROMPT_STRATEGIES
 
 
 @dataclass(frozen=True)
@@ -26,12 +26,67 @@ def _validate_schema_keys(obj: dict[str, Any], expected_keys: tuple[str, ...]) -
     return all(k in obj for k in expected_keys)
 
 
+def _strip_code_fences(text: str) -> str:
+    s = (text or "").strip()
+    if s.startswith("```"):
+        # Remove leading ```lang? and trailing ```
+        lines = s.splitlines()
+        if len(lines) >= 2 and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return s
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort extraction of a JSON object from LLM output."""
+    s = _strip_code_fences(text)
+
+    # Fast path: direct parse
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+
+    # Heuristic: grab outermost {...}
+    start = s.find("{")
+    end = s.rfind("}")
+    if 0 <= start < end:
+        candidate = s[start : end + 1]
+        try:
+            obj = json.loads(candidate)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _merge_json(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    """Merge src into dst (best-effort, used for divide-and-conquer)."""
+    for k, v in src.items():
+        if k not in dst:
+            dst[k] = v
+            continue
+        a = dst[k]
+        if isinstance(a, dict) and isinstance(v, dict):
+            dst[k] = _merge_json(a, v)
+        elif isinstance(a, list) and isinstance(v, list):
+            dst[k] = a + v
+        elif a in (None, "", [], {}):
+            dst[k] = v
+        # else: keep existing
+    return dst
+
+
 class Environment:
     """Environment that turns (markdown, action) into (reward, cost).
 
     Backends:
     - mock: deterministic-ish simulation to validate online learning logic
     - groq: OpenAI-compatible chat completion endpoint (optional)
+    - llama_cpp: local open-source GGUF model via llama.cpp
     """
 
     def __init__(
@@ -41,12 +96,29 @@ class Environment:
         cost_penalty: float = 0.02,
         groq_model: str | None = None,
         groq_timeout_s: float = 60.0,
+        llama_repo_id: str | None = None,
+        llama_filename: str | None = None,
+        llama_model_path: str | None = None,
+        llama_n_ctx: int = 4096,
+        llama_n_threads: int | None = None,
+        llama_n_gpu_layers: int = 0,
     ):
         self.backend = backend
         self.rng = random.Random(seed)
         self.cost_penalty = float(cost_penalty)
         self.groq_model = groq_model or os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         self.groq_timeout_s = float(groq_timeout_s)
+        self.llama_repo_id = llama_repo_id or os.getenv(
+            "COPE_GGUF_REPO", "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+        )
+        self.llama_filename = llama_filename or os.getenv(
+            "COPE_GGUF_FILE", "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        )
+        self.llama_model_path = llama_model_path or os.getenv("COPE_GGUF_PATH")
+        self.llama_n_ctx = int(llama_n_ctx)
+        self.llama_n_threads = int(llama_n_threads) if llama_n_threads is not None else None
+        self.llama_n_gpu_layers = int(llama_n_gpu_layers)
+        self._llm = None
 
     def step(
         self,
@@ -59,6 +131,8 @@ class Environment:
             return self._step_mock(markdown_content, action_id, expected_keys, sample_kind)
         if self.backend == "groq":
             return self._step_groq(markdown_content, action_id, expected_keys)
+        if self.backend == "llama_cpp":
+            return self._step_llama_cpp(markdown_content, action_id, expected_keys)
         raise ValueError(f"Unknown backend: {self.backend}")
 
     def _token_cost_for_action(self, action_id: int, markdown_content: str) -> int:
@@ -159,7 +233,6 @@ class Environment:
 
         token_cost = self._token_cost_for_action(action_id, markdown_content)
         schema_hint = f"Allowed keys: {list(expected_keys)}"
-        full_prompt = build_prompt(markdown_content, action_id=action_id, schema_hint=schema_hint)
 
         # Groq supports OpenAI-compatible chat completions.
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -199,8 +272,140 @@ class Environment:
 
         reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=token_cost)
         # dt currently unused, but could be logged later.
-        _ = full_prompt, dt
+        _ = dt
 
+        return StepResult(
+            reward=reward,
+            generated_json=generated if parse_ok else None,
+            token_cost=token_cost,
+            parse_ok=parse_ok,
+            schema_ok=schema_ok,
+            raw_output=raw_output,
+        )
+
+    def _ensure_llama(self):
+        if self._llm is not None:
+            return self._llm
+
+        try:
+            from llama_cpp import Llama  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(
+                "llama-cpp-python is not installed. Install it and retry."
+            ) from e
+
+        model_path = self.llama_model_path
+        if not model_path:
+            try:
+                from huggingface_hub import hf_hub_download  # type: ignore
+            except Exception as e:  # pragma: no cover
+                raise RuntimeError(
+                    "huggingface-hub is not installed (needed to auto-download GGUF)."
+                ) from e
+            model_path = hf_hub_download(repo_id=self.llama_repo_id, filename=self.llama_filename)
+
+        # Qwen-instruct GGUFs commonly use ChatML tokens.
+        # We embed the ChatML formatting ourselves, so we only need raw completion.
+        self._llm = Llama(
+            model_path=model_path,
+            n_ctx=self.llama_n_ctx,
+            n_threads=self.llama_n_threads,
+            n_gpu_layers=self.llama_n_gpu_layers,
+            logits_all=False,
+            verbose=False,
+        )
+        return self._llm
+
+    def _chatml_prompt(self, system: str, user: str) -> str:
+        return (
+            "<|im_start|>system\n"
+            f"{system.strip()}\n"
+            "<|im_end|>\n"
+            "<|im_start|>user\n"
+            f"{user.strip()}\n"
+            "<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+
+    def _llama_complete(self, system_prompt: str, user_prompt: str, max_tokens: int = 512) -> tuple[str, int]:
+        llm = self._ensure_llama()
+        prompt = self._chatml_prompt(system_prompt, user_prompt)
+
+        # llama-cpp returns dict with choices[0].text for completion API.
+        out = llm(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=0.0,
+            stop=["<|im_end|>", "</s>"],
+        )
+        text = (out["choices"][0]["text"] or "").strip()
+
+        # Token accounting (best-effort).
+        token_cost = self._token_cost_for_action(0, "")  # fallback base
+        try:
+            prompt_tokens = len(llm.tokenize(prompt.encode("utf-8")))
+            out_tokens = len(llm.tokenize(text.encode("utf-8")))
+            token_cost = prompt_tokens + out_tokens
+        except Exception:
+            token_cost = self._token_cost_for_action(0, prompt + text)
+        return text, int(token_cost)
+
+    def _step_llama_cpp(
+        self,
+        markdown_content: str,
+        action_id: int,
+        expected_keys: tuple[str, ...],
+    ) -> StepResult:
+        schema_hint = f"Allowed keys only: {list(expected_keys)}"
+        system_prompt = PROMPT_STRATEGIES[action_id].system_prompt
+
+        if action_id == 3:
+            # Divide & conquer: chunk by paragraphs for stability.
+            chunks: list[str] = []
+            buf: list[str] = []
+            buf_len = 0
+            for para in (markdown_content or "").split("\n\n"):
+                p = para.strip()
+                if not p:
+                    continue
+                if buf_len + len(p) + 2 > 1800 and buf:
+                    chunks.append("\n\n".join(buf))
+                    buf, buf_len = [], 0
+                buf.append(p)
+                buf_len += len(p) + 2
+            if buf:
+                chunks.append("\n\n".join(buf))
+
+            merged: dict[str, Any] = {}
+            total_cost = 0
+            raw_outputs: list[str] = []
+            for chunk in chunks:
+                user_prompt = f"{schema_hint}\n\nConvert this Markdown chunk to JSON:\n\n{chunk}"
+                raw, cost = self._llama_complete(system_prompt, user_prompt, max_tokens=512)
+                total_cost += cost
+                raw_outputs.append(raw)
+                obj = _extract_json_object(raw)
+                if isinstance(obj, dict):
+                    merged = _merge_json(merged, obj)
+
+            parse_ok = bool(merged)
+            schema_ok = parse_ok and _validate_schema_keys(merged, expected_keys)
+            reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=total_cost)
+            return StepResult(
+                reward=reward,
+                generated_json=merged if parse_ok else None,
+                token_cost=total_cost,
+                parse_ok=parse_ok,
+                schema_ok=schema_ok,
+                raw_output="\n\n---\n\n".join(raw_outputs),
+            )
+
+        user_prompt = f"{schema_hint}\n\nConvert the following Markdown to JSON:\n\n{markdown_content}"
+        raw_output, token_cost = self._llama_complete(system_prompt, user_prompt, max_tokens=768)
+        generated = _extract_json_object(raw_output)
+        parse_ok = generated is not None
+        schema_ok = bool(generated) and _validate_schema_keys(generated, expected_keys) if parse_ok else False
+        reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=token_cost)
         return StepResult(
             reward=reward,
             generated_json=generated if parse_ok else None,
