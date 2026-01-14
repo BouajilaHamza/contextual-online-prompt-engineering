@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from .prompts import strategy_for_action
+from .validator import JsonErrorType, validate_json_output
 
 
 @dataclass(frozen=True)
@@ -19,11 +20,9 @@ class StepResult:
     token_cost: int
     parse_ok: bool
     schema_ok: bool
+    error_type: str
+    error_detail: str | None
     raw_output: str
-
-
-def _validate_schema_keys(obj: dict[str, Any], expected_keys: tuple[str, ...]) -> bool:
-    return all(k in obj for k in expected_keys)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -146,14 +145,23 @@ class Environment:
         self,
         parse_ok: bool,
         schema_ok: bool,
+        error_type: JsonErrorType | None,
         token_cost: int,
     ) -> float:
+        # Blueprint reward:
+        # +1.0 if parses AND schema matches, -1.0 if parse fails, -0.5 if parses but misses keys.
         if not parse_ok:
             base = -1.0
         elif not schema_ok:
             base = -0.5
         else:
             base = 1.0
+
+        # Optional: slightly differentiate syntax error types (still <= 0).
+        # This is useful for Phase-2 analysis but doesn't change the sign.
+        if (not parse_ok) and error_type in {JsonErrorType.TRAILING_COMMA, JsonErrorType.UNQUOTED_KEY}:
+            base = min(base, -0.9)
+
         # cost penalty discourages over-using expensive arms
         return float(base - self.cost_penalty * (token_cost / 1000.0))
 
@@ -186,23 +194,18 @@ class Environment:
             p_ok = min(0.97, p_ok + 0.05)
 
         parse_ok = self.rng.random() < p_ok
-        schema_ok = False
-        generated: dict[str, Any] | None = None
         raw_output: str
-
         if not parse_ok:
             raw_output = '{"oops": "missing brace"'  # invalid JSON
         else:
+            generated = {"title": "Doc"}
             # Sometimes schema misses keys when not using schema-like strategies.
             miss_prob = 0.08 if action_id in (1, 2, 3) else 0.18
-            schema_ok = self.rng.random() > miss_prob
-            generated = {"title": "Doc"}
-            if schema_ok:
+            if self.rng.random() > miss_prob:
                 for k in expected_keys:
                     if k not in generated:
                         generated[k] = [] if k in ("items", "requirements", "code_blocks") else {}
             else:
-                # omit one expected key if possible
                 if expected_keys:
                     omit = self.rng.choice(list(expected_keys))
                     for k in expected_keys:
@@ -211,13 +214,21 @@ class Environment:
                         generated[k] = [] if k in ("items", "requirements", "code_blocks") else {}
             raw_output = json.dumps(generated)
 
-        reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=token_cost)
+        v = validate_json_output(raw_output, expected_keys=expected_keys)
+        reward = self._apply_reward_shaping(
+            parse_ok=v.parse_ok,
+            schema_ok=v.schema_ok,
+            error_type=v.error_type,
+            token_cost=token_cost,
+        )
         return StepResult(
             reward=reward,
-            generated_json=generated,
+            generated_json=v.json_obj,
             token_cost=token_cost,
-            parse_ok=parse_ok,
-            schema_ok=schema_ok,
+            parse_ok=v.parse_ok,
+            schema_ok=v.schema_ok,
+            error_type=str(v.error_type),
+            error_detail=v.error_detail,
             raw_output=raw_output,
         )
 
@@ -253,16 +264,7 @@ class Environment:
         data = resp.json()
         raw_output = data["choices"][0]["message"]["content"]
 
-        parse_ok = False
-        schema_ok = False
-        generated: dict[str, Any] | None = None
-        try:
-            generated = json.loads(raw_output)
-            parse_ok = isinstance(generated, dict)
-            schema_ok = parse_ok and _validate_schema_keys(generated, expected_keys)
-        except Exception:
-            parse_ok = False
-            schema_ok = False
+        v = validate_json_output(raw_output, expected_keys=expected_keys)
 
         # If usage is provided, use it as a better proxy for cost.
         usage = data.get("usage") or {}
@@ -270,16 +272,23 @@ class Environment:
         if isinstance(total_tokens, int) and total_tokens > 0:
             token_cost = total_tokens
 
-        reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=token_cost)
+        reward = self._apply_reward_shaping(
+            parse_ok=v.parse_ok,
+            schema_ok=v.schema_ok,
+            error_type=v.error_type,
+            token_cost=token_cost,
+        )
         # dt currently unused, but could be logged later.
         _ = dt
 
         return StepResult(
             reward=reward,
-            generated_json=generated if parse_ok else None,
+            generated_json=v.json_obj if v.parse_ok else None,
             token_cost=token_cost,
-            parse_ok=parse_ok,
-            schema_ok=schema_ok,
+            parse_ok=v.parse_ok,
+            schema_ok=v.schema_ok,
+            error_type=str(v.error_type),
+            error_detail=v.error_detail,
             raw_output=raw_output,
         )
 
@@ -422,15 +431,22 @@ class CopeEnvironment:
                 if isinstance(obj, dict):
                     merged = _merge_json(merged, obj)
 
-            parse_ok = bool(merged)
-            schema_ok = parse_ok and _validate_schema_keys(merged, expected_keys)
-            reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=total_cost)
+            raw = json.dumps(merged) if merged else ""
+            v = validate_json_output(raw, expected_keys=expected_keys)
+            reward = self._apply_reward_shaping(
+                parse_ok=v.parse_ok,
+                schema_ok=v.schema_ok,
+                error_type=v.error_type,
+                token_cost=total_cost,
+            )
             return StepResult(
                 reward=reward,
-                generated_json=merged if parse_ok else None,
+                generated_json=v.json_obj if v.parse_ok else None,
                 token_cost=total_cost,
-                parse_ok=parse_ok,
-                schema_ok=schema_ok,
+                parse_ok=v.parse_ok,
+                schema_ok=v.schema_ok,
+                error_type=str(v.error_type),
+                error_detail=v.error_detail,
                 raw_output="\n\n---\n\n".join(raw_outputs),
             )
 
@@ -439,16 +455,21 @@ class CopeEnvironment:
             max_tokens = 384
         user_prompt = f"{schema_hint}\n\nConvert the following Markdown to JSON:\n\n{markdown_content}"
         raw_output, token_cost = self._llama_complete(system_prompt, user_prompt, max_tokens=max_tokens)
-        generated = _extract_json_object(raw_output)
-        parse_ok = generated is not None
-        schema_ok = bool(generated) and _validate_schema_keys(generated, expected_keys) if parse_ok else False
-        reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=token_cost)
+        v = validate_json_output(raw_output, expected_keys=expected_keys)
+        reward = self._apply_reward_shaping(
+            parse_ok=v.parse_ok,
+            schema_ok=v.schema_ok,
+            error_type=v.error_type,
+            token_cost=token_cost,
+        )
         return StepResult(
             reward=reward,
-            generated_json=generated if parse_ok else None,
+            generated_json=v.json_obj if v.parse_ok else None,
             token_cost=token_cost,
-            parse_ok=parse_ok,
-            schema_ok=schema_ok,
+            parse_ok=v.parse_ok,
+            schema_ok=v.schema_ok,
+            error_type=str(v.error_type),
+            error_detail=v.error_detail,
             raw_output=raw_output,
         )
 
