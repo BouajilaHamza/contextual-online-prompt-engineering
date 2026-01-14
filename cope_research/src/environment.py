@@ -292,40 +292,6 @@ class Environment:
             raw_output=raw_output,
         )
 
-
-class CopeEnvironment:
-    """Blueprint mock simulator to validate LinUCB learning logic quickly."""
-
-    def __init__(self, seed: int = 0):
-        self.rng = random.Random(seed)
-
-    def simulate_step(self, features: dict[str, float], action_id: int) -> tuple[float, float]:
-        """Return (reward, cost) following the blueprint rules."""
-
-        depth = float(features.get("depth", 0.0))
-        length = float(features.get("length", 0.0))
-
-        # Action ids:
-        # 0: ZERO_SHOT, 1: SCHEMA_STRICT, 2: COT_SYNTAX, 3: DIVIDE_CONQUER
-        zero_shot = 0
-        cot = 2
-
-        cost = [1.0, 1.5, 3.0, 4.0][action_id]
-
-        if depth > 0.5:
-            if action_id == cot:
-                return 1.0, cost
-            if action_id == zero_shot:
-                return -1.0, cost
-
-        if length < 0.2:
-            if action_id == zero_shot:
-                return 1.0, cost
-            if action_id == cot:
-                return 0.8, cost
-
-        return float(self.rng.uniform(-0.1, 0.1)), cost
-
     def _ensure_llama(self):
         if self._llm is not None:
             return self._llm
@@ -472,4 +438,38 @@ class CopeEnvironment:
             error_detail=v.error_detail,
             raw_output=raw_output,
         )
+
+
+class CopeEnvironment:
+    """Blueprint mock simulator to validate LinUCB learning logic quickly."""
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+
+    def simulate_step(self, features: dict[str, float], action_id: int) -> tuple[float, float]:
+        """Return (reward, cost) following the blueprint rules."""
+
+        depth = float(features.get("depth", 0.0))
+        length = float(features.get("length", 0.0))
+
+        # Action ids:
+        # 0: ZERO_SHOT, 1: SCHEMA_STRICT, 2: COT_SYNTAX, 3: DIVIDE_CONQUER
+        zero_shot = 0
+        cot = 2
+
+        cost = [1.0, 1.5, 3.0, 4.0][action_id]
+
+        if depth > 0.5:
+            if action_id == cot:
+                return 1.0, cost
+            if action_id == zero_shot:
+                return -1.0, cost
+
+        if length < 0.2:
+            if action_id == zero_shot:
+                return 1.0, cost
+            if action_id == cot:
+                return 0.8, cost
+
+        return float(self.rng.uniform(-0.1, 0.1)), cost
 
