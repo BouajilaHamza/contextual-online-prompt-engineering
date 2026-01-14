@@ -8,6 +8,7 @@ import time
 from dataclasses import asdict, dataclass
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Allow running as: `python cope_research/run_experiment.py ...`
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -20,8 +21,8 @@ from cope_research.src.data_gen import (  # noqa: E402
     generate_dataset,
     generate_drift_dataset,
 )
-from cope_research.src.environment import Environment  # noqa: E402
-from cope_research.src.features import extract_features  # noqa: E402
+from cope_research.src.environment import CopeEnvironment, Environment  # noqa: E402
+from cope_research.src.features import extract_feature_dict, extract_features  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,100 @@ def _aggregate_runs(run_payloads: list[dict[str, object]]) -> dict[str, object]:
     return out
 
 
+def run_blueprint_mock(*, episodes: int, seed: int, out_path: str | None) -> str:
+    """Blueprint experiment: Random vs Greedy(ZERO_SHOT) vs COPE(LinUCB) on a mock simulator."""
+
+    rng = np.random.default_rng(seed)
+    env = CopeEnvironment(seed=seed)
+
+    # Synthetic trials: mix simple and deeply nested.
+    # Simple: short text; Deep: lots of indentation.
+    samples: list[str] = []
+    for i in range(episodes):
+        if rng.random() < 0.5:
+            md = "# Simple\n\nShort line.\nAnother line.\n"
+        else:
+            md = "# Deep\n\n- a\n  - b\n    - c\n      - d\n"
+        samples.append(md)
+
+    cfg = LinUCBConfig(alpha=0.1, feature_dim=5)
+    cope = LinUCBAgent(cfg)
+
+    actions_random: list[int] = []
+    actions_greedy: list[int] = []
+    actions_cope: list[int] = []
+
+    rewards_random: list[float] = []
+    rewards_greedy: list[float] = []
+    rewards_cope: list[float] = []
+
+    for md in samples:
+        f_dict = extract_feature_dict(md)
+        x = extract_features(md)
+
+        a_r = int(rng.integers(0, 4))
+        a_g = 0  # always ZERO_SHOT
+        a_c = cope.select_action(x)
+
+        r_r, _ = env.simulate_step(f_dict, a_r)
+        r_g, _ = env.simulate_step(f_dict, a_g)
+        r_c, _ = env.simulate_step(f_dict, a_c)
+
+        cope.update(x, a_c, r_c)
+
+        actions_random.append(a_r)
+        actions_greedy.append(a_g)
+        actions_cope.append(a_c)
+        rewards_random.append(float(r_r))
+        rewards_greedy.append(float(r_g))
+        rewards_cope.append(float(r_c))
+
+    def cumavg(rs: list[float]) -> list[float]:
+        arr = np.array(rs, dtype=float)
+        return (np.cumsum(arr) / (np.arange(len(arr)) + 1)).tolist()
+
+    payload: dict[str, object] = {
+        "experiment": "blueprint-mock",
+        "episodes": episodes,
+        "seed": seed,
+        "policies": {
+            "random": {"reward": rewards_random, "cumavg_reward": cumavg(rewards_random), "actions": actions_random},
+            "greedy_zero_shot": {
+                "reward": rewards_greedy,
+                "cumavg_reward": cumavg(rewards_greedy),
+                "actions": actions_greedy,
+            },
+            "cope_linucb": {"reward": rewards_cope, "cumavg_reward": cumavg(rewards_cope), "actions": actions_cope},
+        },
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    _ensure_dir(os.path.join("cope_research", "results"))
+    if out_path is None:
+        out_path = os.path.join("cope_research", "results", f"blueprint_mock_{_now_tag()}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+    # Plot: cumulative average reward over time.
+    fig, ax = plt.subplots(figsize=(9, 5))
+    x_axis = np.arange(episodes)
+    ax.plot(x_axis, payload["policies"]["random"]["cumavg_reward"], label="Random")  # type: ignore[index]
+    ax.plot(x_axis, payload["policies"]["greedy_zero_shot"]["cumavg_reward"], label="Greedy (ZERO_SHOT)")  # type: ignore[index]
+    ax.plot(x_axis, payload["policies"]["cope_linucb"]["cumavg_reward"], label="COPE (LinUCB)")  # type: ignore[index]
+    ax.set_title("COPE Blueprint Mock: Cumulative Average Reward")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Cumulative Average Reward")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plot_path = out_path.replace(".json", ".png")
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+
+    return out_path
+
+
 def run_experiment(
     *,
     experiment: str,
@@ -190,8 +285,16 @@ def main() -> None:
 
     sub.add_parser("learning-curve", parents=[common])
     sub.add_parser("drift", parents=[common])
+    bp = sub.add_parser("blueprint-mock")
+    bp.add_argument("--episodes", type=int, default=100)
+    bp.add_argument("--seed", type=int, default=0)
+    bp.add_argument("--out", type=str, default=None)
 
     args = parser.parse_args()
+    if args.cmd == "blueprint-mock":
+        out_path = run_blueprint_mock(episodes=args.episodes, seed=args.seed, out_path=args.out)
+        print(out_path)
+        return
     out_path = run_experiment(
         experiment=args.cmd,
         episodes=args.episodes,

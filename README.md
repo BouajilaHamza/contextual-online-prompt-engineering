@@ -21,6 +21,12 @@ python cope_research/run_experiment.py learning-curve --episodes 100 --runs 20
 python cope_research/plot_results.py cope_research/results/learning_curve.json
 ```
 
+Blueprint mock (fast RL sanity check):
+
+```bash
+python cope_research/run_experiment.py blueprint-mock --episodes 100
+```
+
 Adaptation / drift:
 
 ```bash

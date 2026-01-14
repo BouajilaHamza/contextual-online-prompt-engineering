@@ -13,46 +13,39 @@ class PromptStrategy:
     relative_cost: float
 
 
-PROMPT_STRATEGIES: list[PromptStrategy] = [
-    PromptStrategy(
-        name="ZeroShot",
-        system_prompt=(
-            "You are a JSON converter. Convert the following Markdown to JSON. "
-            "Return ONLY valid JSON."
-        ),
-        relative_cost=1.0,
+PROMPT_STRATEGIES: dict[str, str] = {
+    "ZERO_SHOT": (
+        "You are a helpful data assistant. Convert the provided Markdown content into valid JSON."
     ),
-    PromptStrategy(
-        name="SchemaStrict",
-        system_prompt=(
-            "You are a strict JSON converter. Convert the following Markdown to JSON.\n"
-            "Strictly follow the schema constraints:\n"
-            "- Use only the allowed keys described by the user.\n"
-            "- Do not hallucinate additional keys.\n"
-            "- Return ONLY valid JSON."
-        ),
-        relative_cost=1.5,
+    "SCHEMA_STRICT": (
+        "You are a strict syntax validator. Convert Markdown to JSON. Ensure all keys are quoted. "
+        "Do not leave trailing commas. Follow the schema exactly."
     ),
-    PromptStrategy(
-        name="ChainOfThoughtSyntactic",
-        system_prompt=(
-            "You are a strict JSON converter. Convert the following Markdown to JSON.\n"
-            "Think step-by-step internally. First identify the root object, then process each "
-            "section. Explicitly check for trailing commas before closing arrays/objects.\n"
-            "Return ONLY valid JSON."
-        ),
-        relative_cost=2.5,
+    "COT_SYNTAX": (
+        "Think step-by-step. First, identify the structure. Second, escape all special characters. "
+        "Third, construct the JSON. Verify closing brackets before outputting."
     ),
-    PromptStrategy(
-        name="DivideAndConquer",
-        system_prompt=(
-            "You are a strict JSON converter. The input may be large.\n"
-            "Split the document into coherent sections, convert each to JSON, then merge.\n"
-            "Return ONLY valid JSON."
-        ),
-        relative_cost=3.5,
+    "DIVIDE_CONQUER": (
+        "Process this file section by section. Handle the header first, then the body. "
+        "Merge them into a single JSON object at the end."
     ),
-]
+}
+
+# Canonical arm order used everywhere (action_id -> key).
+ARM_KEYS: list[str] = ["ZERO_SHOT", "SCHEMA_STRICT", "COT_SYNTAX", "DIVIDE_CONQUER"]
+
+# Relative cost proxy for token economics (used for reporting/penalties).
+ARM_RELATIVE_COST: dict[str, float] = {
+    "ZERO_SHOT": 1.0,
+    "SCHEMA_STRICT": 1.5,
+    "COT_SYNTAX": 2.5,
+    "DIVIDE_CONQUER": 3.5,
+}
+
+
+def strategy_for_action(action_id: int) -> PromptStrategy:
+    key = ARM_KEYS[action_id]
+    return PromptStrategy(name=key, system_prompt=PROMPT_STRATEGIES[key], relative_cost=ARM_RELATIVE_COST[key])
 
 
 def build_prompt(
@@ -65,7 +58,7 @@ def build_prompt(
     This keeps the code path shared between mock and real LLM backends.
     """
 
-    strategy = PROMPT_STRATEGIES[action_id]
+    strategy = strategy_for_action(action_id)
     parts: list[str] = [f"SYSTEM:\n{strategy.system_prompt}"]
     if schema_hint:
         parts.append(f"\nSCHEMA_HINT:\n{schema_hint.strip()}")

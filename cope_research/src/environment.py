@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from .prompts import PROMPT_STRATEGIES
+from .prompts import strategy_for_action
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ class Environment:
         # very rough proxy: base + proportional to length + per-strategy multiplier
         base = 200
         per_char = 0.02
-        rel = PROMPT_STRATEGIES[action_id].relative_cost
+        rel = strategy_for_action(action_id).relative_cost
         return int((base + per_char * len(markdown_content)) * rel)
 
     def _apply_reward_shaping(
@@ -240,7 +240,7 @@ class Environment:
         payload = {
             "model": self.groq_model,
             "messages": [
-                {"role": "system", "content": PROMPT_STRATEGIES[action_id].system_prompt},
+                {"role": "system", "content": strategy_for_action(action_id).system_prompt},
                 {"role": "user", "content": f"{schema_hint}\n\n{markdown_content}"},
             ],
             "temperature": 0.0,
@@ -282,6 +282,40 @@ class Environment:
             schema_ok=schema_ok,
             raw_output=raw_output,
         )
+
+
+class CopeEnvironment:
+    """Blueprint mock simulator to validate LinUCB learning logic quickly."""
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+
+    def simulate_step(self, features: dict[str, float], action_id: int) -> tuple[float, float]:
+        """Return (reward, cost) following the blueprint rules."""
+
+        depth = float(features.get("depth", 0.0))
+        length = float(features.get("length", 0.0))
+
+        # Action ids:
+        # 0: ZERO_SHOT, 1: SCHEMA_STRICT, 2: COT_SYNTAX, 3: DIVIDE_CONQUER
+        zero_shot = 0
+        cot = 2
+
+        cost = [1.0, 1.5, 3.0, 4.0][action_id]
+
+        if depth > 0.5:
+            if action_id == cot:
+                return 1.0, cost
+            if action_id == zero_shot:
+                return -1.0, cost
+
+        if length < 0.2:
+            if action_id == zero_shot:
+                return 1.0, cost
+            if action_id == cot:
+                return 0.8, cost
+
+        return float(self.rng.uniform(-0.1, 0.1)), cost
 
     def _ensure_llama(self):
         if self._llm is not None:
@@ -357,7 +391,7 @@ class Environment:
         expected_keys: tuple[str, ...],
     ) -> StepResult:
         schema_hint = f"Allowed keys only: {list(expected_keys)}"
-        system_prompt = PROMPT_STRATEGIES[action_id].system_prompt
+        system_prompt = strategy_for_action(action_id).system_prompt
 
         if action_id == 3:
             # Divide & conquer: chunk by paragraphs for stability.
