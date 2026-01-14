@@ -132,7 +132,8 @@ def run_blueprint_mock(*, episodes: int, seed: int, out_path: str | None) -> str
         if rng.random() < 0.5:
             md = "# Simple\n\nShort line.\nAnother line.\n"
         else:
-            md = "# Deep\n\n- a\n  - b\n    - c\n      - d\n"
+            # Ensure depth > 0.5 under blueprint feature scaling (indent_level/10).
+            md = "# Deep\n\n- a\n  - b\n    - c\n      - d\n        - e\n          - f\n            - g\n"
         samples.append(md)
 
     cfg = LinUCBConfig(alpha=0.1, feature_dim=5)
