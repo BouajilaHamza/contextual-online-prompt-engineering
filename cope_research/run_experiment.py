@@ -7,6 +7,8 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 
+from tqdm import tqdm
+
 import numpy as np
 
 # Allow running as: `python cope_research/run_experiment.py ...`
@@ -55,7 +57,9 @@ def _run_policy(
     agent = LinUCBAgent(cfg)
 
     logs: list[EpisodeLog] = []
-    for s in samples:
+    pbar = tqdm(total=len(samples), desc=f"  [{policy_name}]", leave=True)
+    for i, s in enumerate(samples):
+        # We handle logging inside tqdm
         x = extract_features(s.md)
         if policy_name == "random":
             action = int(rng.integers(0, cfg.n_arms))
@@ -80,6 +84,8 @@ def _run_policy(
                 kind=str(s.kind),
             )
         )
+        pbar.update(1)
+    pbar.close()
 
     rewards = np.array([l.reward for l in logs], dtype=float)
     costs = np.array([l.token_cost for l in logs], dtype=float)
@@ -158,13 +164,22 @@ def run_experiment(
     }
 
     for p in policies:
+        print(f"\nEvaluating policy: {p}")
         run_payloads: list[dict[str, object]] = []
         for r in range(runs):
+            print(f"  Run {r+1}/{runs}...")
             run_seed = seed + 1000 * r + (0 if p == "random" else 17)
             run_payloads.append(
                 _run_policy(samples=samples, policy_name=p, env=env, seed=run_seed, alpha=alpha)
             )
         results["policies"][p] = _aggregate_runs(run_payloads)
+        
+        # Checkpoint: save intermediate results
+        if out_path:
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2)
+                f.write("\n")
+            print(f"Checkpoint saved to {out_path}")
 
     _ensure_dir(os.path.join("cope_research", "results"))
     if out_path is None:
@@ -183,7 +198,7 @@ def main() -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--episodes", type=int, default=100)
     common.add_argument("--runs", type=int, default=5)
-    common.add_argument("--backend", type=str, default="llama_cpp", choices=["llama_cpp", "groq", "mock"])
+    common.add_argument("--backend", type=str, default="llama_cpp", choices=["llama_cpp", "vllm", "groq", "mock"])
     common.add_argument("--seed", type=int, default=0)
     common.add_argument("--alpha", type=float, default=1.5)
     common.add_argument("--out", type=str, default=None, help="Output JSON path")
@@ -205,5 +220,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 

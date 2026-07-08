@@ -118,6 +118,11 @@ class Environment:
         self.llama_n_ctx = int(llama_n_ctx)
         self.llama_n_threads = int(llama_n_threads) if llama_n_threads is not None else None
         self.llama_n_gpu_layers = int(llama_n_gpu_layers)
+        if self.llama_n_gpu_layers == 0 and os.getenv("COPE_LLAMA_GPU_LAYERS"):
+            self.llama_n_gpu_layers = int(os.getenv("COPE_LLAMA_GPU_LAYERS"))
+        
+        # vLLM settings
+        self.vllm_model_id = os.getenv("COPE_VLLM_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
         self._llm = None
 
     def step(
@@ -133,6 +138,8 @@ class Environment:
             return self._step_groq(markdown_content, action_id, expected_keys)
         if self.backend == "llama_cpp":
             return self._step_llama_cpp(markdown_content, action_id, expected_keys)
+        if self.backend == "vllm":
+            return self._step_vllm(markdown_content, action_id, expected_keys)
         raise ValueError(f"Unknown backend: {self.backend}")
 
     def _token_cost_for_action(self, action_id: int, markdown_content: str) -> int:
@@ -283,6 +290,68 @@ class Environment:
             raw_output=raw_output,
         )
 
+    def _ensure_vllm(self):
+        if self._llm is not None:
+            return self._llm
+        
+        try:
+            from vllm import LLM as vLLM  # type: ignore
+        except Exception as e:
+            raise RuntimeError("vllm is not installed. Install it and retry.") from e
+            
+        print(f"Loading vLLM model: {self.vllm_model_id}")
+        self._llm = vLLM(
+            model=self.vllm_model_id,
+            dtype="half",
+            gpu_memory_utilization=0.7,  # Leave some room
+            trust_remote_code=True,
+            max_model_len=2048,
+        )
+        return self._llm
+
+    def _step_vllm(
+        self,
+        markdown_content: str,
+        action_id: int,
+        expected_keys: tuple[str, ...],
+    ) -> StepResult:
+        llm = self._ensure_vllm()
+        from vllm import SamplingParams
+        
+        schema_hint = f"Allowed keys only: {list(expected_keys)}"
+        system_prompt = PROMPT_STRATEGIES[action_id].system_prompt
+        user_prompt = f"{schema_hint}\n\nConvert the following Markdown to JSON:\n\n{markdown_content}"
+        prompt = self._chatml_prompt(system_prompt, user_prompt)
+        
+        max_tokens = 384 if action_id == 2 else 256
+        sampling_params = SamplingParams(
+            temperature=0,
+            max_tokens=max_tokens,
+            stop=["<|im_end|>", "</s>"]
+        )
+        
+        outputs = llm.generate([prompt], sampling_params)
+        raw_output = outputs[0].outputs[0].text.strip()
+        
+        # Token accounting
+        prompt_tokens = len(outputs[0].prompt_token_ids)
+        out_tokens = len(outputs[0].outputs[0].token_ids)
+        token_cost = prompt_tokens + out_tokens
+        
+        generated = _extract_json_object(raw_output)
+        parse_ok = generated is not None
+        schema_ok = bool(generated) and _validate_schema_keys(generated, expected_keys) if parse_ok else False
+        reward = self._apply_reward_shaping(parse_ok=parse_ok, schema_ok=schema_ok, token_cost=token_cost)
+        
+        return StepResult(
+            reward=reward,
+            generated_json=generated if parse_ok else None,
+            token_cost=int(token_cost),
+            parse_ok=parse_ok,
+            schema_ok=schema_ok,
+            raw_output=raw_output,
+        )
+
     def _ensure_llama(self):
         if self._llm is not None:
             return self._llm
@@ -302,8 +371,10 @@ class Environment:
                 raise RuntimeError(
                     "huggingface-hub is not installed (needed to auto-download GGUF)."
                 ) from e
+            print(f"Downloading model from HuggingFace: {self.llama_repo_id}/{self.llama_filename}...")
             model_path = hf_hub_download(repo_id=self.llama_repo_id, filename=self.llama_filename)
 
+        print(f"Loading model into memory (GPU layers: {self.llama_n_gpu_layers})...")
         # Qwen-instruct GGUFs commonly use ChatML tokens.
         # We embed the ChatML formatting ourselves, so we only need raw completion.
         self._llm = Llama(

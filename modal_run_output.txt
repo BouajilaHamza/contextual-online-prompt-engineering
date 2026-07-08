@@ -1,0 +1,77 @@
+✓ Initialized. View run at 
+https://modal.com/apps/bouajilahamza/main/ap-qF5Jiift5JeHhZkWZmjN7u
+✓ Created objects.
+├── 🔨 Created mount 
+│   /teamspace/studios/this_studio/research/contextual-online-prompt-engineering
+│   /cope_research/modal_app.py
+├── 🔨 Created mount 
+│   /teamspace/studios/this_studio/research/contextual-online-prompt-engineering
+└── 🔨 Created function run_remote.
+Starting remote experiment: learning-curve (1 episodes, 1 runs)
+Running command: python3 /root/cope/cope_research/run_experiment.py learning-curve --backend llama_cpp --episodes 1 --runs 1 --seed 0 --alpha 1.5
+STDOUT: 
+STDERR: 
+Stopping app - uncaught exception raised locally: RuntimeError('Experiment failed with code -4').
+Traceback (most recent call last):
+  File "/pkg/modal/_runtime/container_io_manager.py", line 947, in handle_input_exception
+    yield
+  File "/pkg/modal/_container_entrypoint.py", line 171, in run_input_sync
+    values = io_context.call_function_sync()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/pkg/modal/_runtime/container_io_manager.py", line 225, in call_function_sync
+    expected_value_or_values = self.finalized_function.callable(*args, **kwargs)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/modal_app.py", line 80, in run_remote
+    raise RuntimeError(f"Experiment failed with code {process.returncode}")
+RuntimeError: Experiment failed with code -4
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /teamspace/studios/this_studio/research/contextual-online-prompt-engineering │
+│ /cope_research/modal_app.py:111 in main                                      │
+│                                                                              │
+│   110 │   print(f"Starting remote experiment: {experiment} ({episodes} episo │
+│ ❱ 111 │   results = run_remote.remote(experiment, episodes, runs, backend, s │
+│   112                                                                        │
+│                                                                              │
+│ /home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/modal/_ob │
+│ ject.py:340 in wrapped                                                       │
+│                                                                              │
+│   339 │   │   await self.hydrate()                                           │
+│ ❱ 340 │   │   return await method(self, *args, **kwargs)                     │
+│   341                                                                        │
+│                                                                              │
+│ /home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/modal/_fu │
+│ nctions.py:1766 in remote                                                    │
+│                                                                              │
+│   1765 │   │                                                                 │
+│ ❱ 1766 │   │   return await self._call_function(args, kwargs)                │
+│   1767                                                                       │
+│                                                                              │
+│ /home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/modal/_fu │
+│ nctions.py:1710 in _call_function                                            │
+│                                                                              │
+│   1709 │   │                                                                 │
+│ ❱ 1710 │   │   return await invocation.run_function()                        │
+│   1711                                                                       │
+│                                                                              │
+│ /home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/modal/_fu │
+│ nctions.py:293 in run_function                                               │
+│                                                                              │
+│    292 │   │   │   item = await self._get_single_output()                    │
+│ ❱  293 │   │   │   return await _process_result(item.result, item.data_forma │
+│    294                                                                       │
+│                                                                              │
+│ /home/zeus/miniconda3/envs/cloudspace/lib/python3.12/site-packages/modal/_ut │
+│ ils/function_utils.py:529 in _process_result                                 │
+│                                                                              │
+│   528 │   │   │                                                              │
+│ ❱ 529 │   │   │   raise exc_with_hints(exc)                                  │
+│   530                                                                        │
+│                                                                              │
+│     ...Remote call to Modal Function (ta-01KEWTJA84GJJNMZEPYCDBEKMH)...      │
+│                                                                              │
+│ /root/modal_app.py:80 in run_remote                                          │
+│                                                                              │
+│ ❱ 80 raise RuntimeError(f"Experiment failed with code {process.returncode}") │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+RuntimeError: Experiment failed with code -4
